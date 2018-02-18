@@ -36,7 +36,7 @@ DEBUG_TEARDOWN = "###teardown###"
 DEBUG_TRUNCATE = "###truncate###"
 DEBUG_STOP = "###stop###"
 
-run_lab2 = False
+run_phase2 = False
 # Whether or not the sliding window test passed.
 sliding_window_passed = False
 
@@ -157,7 +157,7 @@ def start_server(port=DEFAULT_SERVER_PORT, flags=[], reference=False):
   return server
 
 
-def start_client(server="localhost", server_port=DEFAULT_SERVER_PORT, 
+def start_client(server="localhost", server_port=DEFAULT_SERVER_PORT,
                  port=DEFAULT_CLIENT_PORT, flags=[], reference=False):
   """
   Function: start_client
@@ -403,7 +403,7 @@ def correct_header_fields():
   # Start reference solution to get answers.
   ref_client_port, ref_server_port = choose_ports()
   ref_server = start_server(port=ref_server_port, reference=True)
-  ref_client = start_client(server_port=ref_server_port, 
+  ref_client = start_client(server_port=ref_server_port,
                             port=ref_client_port, reference=True)
 
   # Get reference checksum.
@@ -678,9 +678,9 @@ TESTS = [
    "Puts an EOF in client 1's and client 2's STDINs. Checks that connection\n" +
    "teardown happens on both sides (calls to ctcp_destroy())."),
 
-  # Tests for only Lab 2.
+  # Tests for only phase 2.
   ("advanced", "Handles sliding window", larger_windows,
-   "(Lab 2 Only): Checks to see if sliding window is being used.\n")
+   "(phase 2 Only): Checks to see if sliding window is being used.\n")
 ]
 
 ################################# TESTER CODE ##################################
@@ -691,7 +691,7 @@ def run_tests(tests):
   -------------------
   Runs through all the specified tests.
   """
-  global run_lab2, sliding_window_passed
+  global run_phase2, sliding_window_passed
 
   num_success = 0
   print "Starting tests..."
@@ -729,9 +729,9 @@ def run_tests(tests):
     if len(err): print err
     teardown()
 
-  # If running the Lab 2 tester, fail if sliding window not implemented.
+  # If running the phase 2 tester, fail if sliding window not implemented.
   print "\nPASSED: %d/%d" % (num_success, len(tests))
-  if run_lab2 and not sliding_window_passed and len(tests) == len(TESTS):
+  if run_phase2 and not sliding_window_passed and len(tests) == len(TESTS):
     print "You will automatically receive a 0 if sliding window not implemented."
 
 
@@ -761,32 +761,32 @@ def parse_args():
 
   Returns: List of test numbers to run.
   """
-  global run_lab2
+  global run_phase2
 
   parser = argparse.ArgumentParser()
   parser.add_argument("--tests", type=int, nargs="+", help="Tests to run")
   parser.add_argument("--list", action="store_const", const=True,
                       help="Lists all tests")
   parser.add_argument("--timeout", type=int, help="Tester timeout, in seconds")
-  parser.add_argument("--lab2", action="store_const", const=True,
-                      help="Run Lab 2 tests")
+  parser.add_argument("--phase2", action="store_const", const=True,
+                      help="Run phase 2 tests")
   args = parser.parse_args()
 
   # Get all the tests to run.
   if not args.tests:
-    args.tests = range(1, len(TESTS) + (0 if not args.lab2 else 1))
+    args.tests = range(1, len(TESTS) + (0 if not args.phase2 else 1))
   if args.timeout:
     global TEST_TIMEOUT
     TEST_TIMEOUT = args.timeout
 
-  if args.lab2:
-    run_lab2 = True
+  if args.phase2:
+    run_phase2 = True
 
   # Get the tests to run.
   test_nums = filter(lambda t: int(t) > 0 and int(t) <= len(TESTS), args.tests)
   if len(test_nums) < 1:
     print "Invalid test(s) specified. Tests range from 1 to %d." % \
-        (len(TESTS) if not args.lab2 else len(TESTS) + 1)
+        (len(TESTS) if not args.phase2 else len(TESTS) + 1)
     print_test_list()
     sys.exit(1)
 

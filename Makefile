@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -g -Wall -Werror -pthread
 
-LAB=lab12
+PROJECT=project23
 TAR = ctcp.tar.gz
 SUBMISSION_SITE = https://notebowl.denison.edu
 
@@ -26,7 +26,7 @@ ctcp: $(OBJS)
 	$(CC) $(CFLAGS) -o ctcp $(OBJS)
 
 submit: clean
-	./.tarSubmission.sh $(TAR) $(LAB)
+	./.tarSubmission.sh $(TAR)
 	@echo
 	@echo
 	@echo '  Your submission file $(TAR) was successfully created.'
