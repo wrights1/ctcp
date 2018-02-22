@@ -147,6 +147,8 @@ void ctcp_read(ctcp_state_t *state) {
     //     sentBytes == sent;
     // }
 
+    /* TODO: What if we're sending a big file? */
+
     int sentBytes = conn_send(state->conn, segment, segLength);
 
     #if DEBUG
@@ -163,6 +165,7 @@ void ctcp_read(ctcp_state_t *state) {
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     #if DEBUG
     printf("\n---\n");
+    print_hdr_ctcp(segment);
     #endif
 
     // If the ACK flag is turned on, update our seq number.
@@ -175,7 +178,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     }
 
     // Output the data if there is data in the segment
-    // TODO: 'm subtracting the size of the segment without the data from the 
+    // TODO: I'm subtracting the size of the segment without the data from the 
     // received segment's length, to get the length of the data.
     // what do you think about that? It seems to work well for now.
     //
@@ -189,12 +192,35 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
         state->ackno += received_data_len;
 
         #if DEBUG
-        printf("received len = %lu\n", len);
+        printf("received len = %lu\n", received_data_len);
         #endif
+
+        // construct an ACK segment - only if we receive data.
+        ctcp_segment_t *ack_segment = (ctcp_segment_t *) malloc(sizeof(ctcp_segment_t));
+        ack_segment->seqno = htonl(state->seqno);
+        ack_segment->ackno = htonl(state->ackno);
+        ack_segment->len = htons(sizeof(ctcp_segment_t));
+
+        ack_segment->flags = 0;
+        ack_segment->flags |= ACK;
+        ack_segment->flags = htonl(ack_segment->flags);
+
+        ack_segment->window = htons(MAX_SEG_DATA_SIZE);
+        ack_segment->cksum = 0;
+        ack_segment->cksum = cksum(ack_segment, sizeof(ctcp_segment_t));
+
+        // TODO: Check for the actual number of bytes send?
+        conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
+
+        #if DEBUG
+        print_hdr_ctcp(ack_segment);
+        #endif
+
+        // free the ACK segment
+        free(ack_segment);
     }
     
     #if DEBUG
-    print_hdr_ctcp(segment);
     printf("---\n\n");
     #endif
 
