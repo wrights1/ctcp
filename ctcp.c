@@ -121,6 +121,7 @@ void ctcp_read(ctcp_state_t *state) {
     segment->seqno = htonl(state->seqno);
     segment->ackno = htonl(state->ackno);
     segment->len = htons(segLength);
+    segment->flags = 0;
     segment->flags |= ACK;
     segment->window = htons(MAX_SEG_DATA_SIZE);
     segment->cksum = 0;
