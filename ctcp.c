@@ -29,14 +29,14 @@ struct ctcp_state {
     struct ctcp_state **prev; /* Prev in linked list */
 
     conn_t *conn;                         /* Connection object -- needed in order to figure
-                                                             out destination when sending */
+                                             out destination when sending */
     linked_list_t *segments;    /* Linked list of segments sent to this connection.
-                                                             It may be useful to have multiple linked lists
-                                                             for unacknowledged segments, segments that
-                                                             haven't been sent, etc. Lab 1 uses the
-                                                             stop-and-wait protocol and therefore does not
-                                                             necessarily need a linked list. You may remove
-                                                             this if this is the case for you */
+                                   It may be useful to have multiple linked lists
+                                   for unacknowledged segments, segments that
+                                   haven't been sent, etc. Lab 1 uses the
+                                   stop-and-wait protocol and therefore does not
+                                   necessarily need a linked list. You may remove
+                                   this if this is the case for you */
 
     uint32_t seqno;
     uint32_t ackno;
@@ -49,7 +49,7 @@ struct ctcp_state {
 static ctcp_state_t *state_list;
 
 /* FIXME: Feel free to add as many helper functions as needed. Don't repeat
-                    code! Helper functions make the code clearer and cleaner. */
+          code! Helper functions make the code clearer and cleaner. */
 
 #define DEBUG 1
 
@@ -60,7 +60,7 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg) {
     }
 
     /* Established a connection. Create a new state and update the linked list
-         of connection states. */
+       of connection states. */
     ctcp_state_t *state = calloc(sizeof(ctcp_state_t), 1);
     state->next = state_list;
     state->prev = &state_list;
@@ -168,6 +168,8 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     printf("\n---\n");
     print_hdr_ctcp(segment);
     #endif
+
+    // TODO: use the segment's checksum to verify the packet.
 
     // If the ACK flag is turned on, update our seq number.
     if (segment->flags & TH_ACK) {
