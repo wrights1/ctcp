@@ -83,8 +83,8 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg) {
     state->seqno = 1;
     state->ackno = 1;
 
-    state_list->unsent = NULL;
-    state_list->sent = NULL;
+    state->unsent = NULL;
+    state->sent = NULL;
 
     state->timeSent = 0;
 
@@ -114,34 +114,49 @@ void ctcp_destroy(ctcp_state_t *state) {
 
 */
 void ctcp_read(ctcp_state_t *state) {
-    // allocate the input buffer
-    char *buf;
-    buf = calloc(sizeof(char), MAX_SEG_DATA_SIZE);
-    size_t len = MAX_SEG_DATA_SIZE;
-
-    // read the input
-    int ret = 0;
-    ret = conn_input(state->conn, buf, len);
-
-    // change this later to send the entire buffer which is read in all at once
-    if (ret > 0)
+    printf("ctcp_read()\n");
+    if (state->unsent != NULL)
     {
-        ctcp_send(state, buf);
-    }
-    // clean up resources
-    free(buf);
+        printf("unsent NULL\n");
+        ctcp_segment_t *segment = state->sent;
+        int segLength = sizeof(ctcp_segment_t) +
+            (strlen(segment->data) * sizeof(char));
+        int sentBytes = conn_send(state->conn, segment, segLength);
 
-    if (state_list->unsent != NULL)
-    {
-        ctcp_send(state, state_list->unsent->data);
-        state_list->unsent = NULL;
+        #if DEBUG
+        printf("sentBytes = %d, segLength = %d\n", sentBytes, segLength);
+        print_hdr_ctcp(segment);
+        printf("---\n\n");
+        #endif
+
+        state->sent = state->unsent;
+        state->unsent = NULL;
+    } else if (state->sent == NULL) {
+        printf("sent NULL");
+        // allocate the input buffer
+        char *buf;
+        buf = calloc(sizeof(char), MAX_SEG_DATA_SIZE);
+        size_t len = MAX_SEG_DATA_SIZE;
+
+        // read the input
+        int ret = 0;
+        ret = conn_input(state->conn, buf, len);
+
+        // change this later to send the entire buffer which is read in all at once
+        if (ret > 0)
+        {
+            ctcp_send(state, buf);
+        }
+        // clean up resources
+        free(buf);
     }
 }
 
 int ctcp_send(ctcp_state_t *state, char *buf)
 {
     // create a cTCP segment with the input data
-    ctcp_segment_t *segment = malloc(sizeof(ctcp_segment_t) + (strlen(buf) * sizeof(char)));
+    ctcp_segment_t *segment;
+    segment = malloc(sizeof(ctcp_segment_t) + (strlen(buf) * sizeof(char)));
     strcpy(segment->data,buf);
 
     #if DEBUG
@@ -187,7 +202,7 @@ int ctcp_send(ctcp_state_t *state, char *buf)
 
     /* TODO: What if we're sending a big file? */
 
-    state_list->sent = segment;
+    state->sent = segment;
 
     int sentBytes = conn_send(state->conn, segment, segLength);
 
@@ -197,7 +212,6 @@ int ctcp_send(ctcp_state_t *state, char *buf)
     printf("---\n\n");
     #endif
 
-    free(segment);
     return sentBytes;
 }
 
@@ -215,6 +229,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
         state_list->timeSent = 0;
         free(state->sent);
         state->sent = NULL;
+
         #if DEBUG
         printf("received ackno = %u\n", ntohl(segment->ackno));
         #endif
@@ -276,17 +291,24 @@ void ctcp_output(ctcp_state_t *state) {
 }
 
 void ctcp_timer() {
-    if (state_list->timeSent == 0) return;
+    ctcp_state_t *state = state_list;
 
-    // printf("state_list->timeSent = %li\n", state_list->timeSent);
-    // printf("current_time = %li\n", current_time() );
-    // printf("difference = %li\n", (current_time() - state_list->timeSent) );
+    while (state != NULL) {
+        if (state->timeSent == 0) return;
 
-    if ( (current_time() - state_list->timeSent) > state_list->cfg->rt_timeout )
-    {
-        printf("timed out\n");
-        state_list->timeSent = 0;
-        state_list->unsent = state_list->sent;
-        state_list->sent = NULL;
+        // printf("state->timeSent = %li\n", state->timeSent);
+        // printf("current_time = %li\n", current_time() );
+        // printf("difference = %li\n", (current_time() - state->timeSent) );
+
+        if ( (current_time() - state->timeSent) > state->cfg->rt_timeout )
+        {
+            printf("timed out\n");
+            ctcp_send()
+            state->timeSent = 0;
+            state->unsent = state->sent;
+            state->sent = NULL;
+        }
+
+        state = state->next;
     }
 }
