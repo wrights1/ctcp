@@ -72,6 +72,9 @@ static ctcp_state_t *state_list;
 //     return sizeof(ctcp_segment_t) + strlen(dataLen * sizeof(char));
 // }
 
+/*
+ * Send the given segment over the connection in the given state struct.
+ */
 int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
 {
     state->sent = segment;
@@ -98,6 +101,9 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
     return sentBytes;
 }
 
+/*
+ * Make a segment based on the current connection with the given data and flags
+ */
 ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
 {
     ctcp_segment_t *segment;
@@ -137,6 +143,9 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
     return segment;
 }
 
+/*
+ * Verify the given segment's checksum.
+ */
 int verify_cksum(ctcp_segment_t *segment)
 {
     uint16_t original_cksum = segment->cksum;
@@ -150,6 +159,9 @@ int verify_cksum(ctcp_segment_t *segment)
     return original_cksum == computed_cksum;
 }
 
+/*
+ * Convert fields in the given segment to host byte order.
+ */
 void convert_to_host_order(ctcp_segment_t *segment)
 {
     segment->seqno = ntohl(segment->seqno);
@@ -223,7 +235,6 @@ void ctcp_destroy(ctcp_state_t *state)
 void ctcp_read(ctcp_state_t *state)
 {
     if (state->sent == NULL) {
-        printf("sent = NULL\n");
         // allocate the input buffer
         char *buf;
         buf = calloc(sizeof(char), MAX_SEG_DATA_SIZE - sizeof(ctcp_segment_t));
