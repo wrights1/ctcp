@@ -274,7 +274,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     convert_to_host_order(segment);
 
     // if we receive an ACK and we sent a FIN.
-    if ( (segment->flags & ACK) && state->finSent == 1 )
+    if ((segment->flags & ACK) && state->finSent == 1 )
     {
         state->finSentAcked = 1;
 
@@ -283,22 +283,34 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
         free(state->sent);
         state->sent = NULL;
         state->retransCount = 0;
+
+        if (state->finRecv) {
+            #if DEBUG
+            printf("\n--- recv end\n\n");
+            #endif
+
+            ctcp_destroy(state);
+        }
     }
 
     if ((segment->flags & FIN) && state->finSent == 0)
     {
         ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
         ctcp_send(state, finSeg);
+
+        state->finRecv = 1;
         state->ackno += 1;
         state->finSent = 1;
-    }
-
-    if ( (segment->flags & FIN))
-    {
+    } else if ((segment->flags & FIN)) {
+        state->finRecv = 1;
         ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
         ctcp_send(state, ackSeg);
 
         if (state->finSentAcked) {
+            #if DEBUG
+            printf("\n--- recv end\n\n");
+            #endif
+
             ctcp_destroy(state);
         }
     }
