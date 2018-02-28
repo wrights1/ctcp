@@ -48,6 +48,10 @@ struct ctcp_state {
 
     uint16_t retransCount;
 
+    uint8_t finSent;
+    uint8_t finSentAcked;
+    uint8_t finRecv;
+
 };
 
 /**
@@ -87,9 +91,9 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
     #if DEBUG
     printf("sentBytes = %d, segLength = %d\n", sentBytes, segLength);
 
-    printf("---\n");
+    printf("--- send\n");
     print_hdr_ctcp(segment);
-    printf("---\n\n");
+    printf("--- send end\n\n");
     #endif
 
     return sentBytes;
@@ -226,13 +230,13 @@ void ctcp_read(ctcp_state_t *state) {
         printf("ret = %d\n", ret);
         printf("strlen(buf) = %lu\n", strlen(buf));
 
-        if (ret == -1)
+        if (ret == -1) // EOF found
         {
             // send our FIN
-
-
-            free(buf);
-            ctcp_destroy(state);
+            ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK    );
+            ctcp_send(state, finSeg);
+            state->seqno += 1;
+            state->finSent = 1;
         }
         if (ret > 0)
         {
@@ -251,7 +255,7 @@ void ctcp_read(ctcp_state_t *state) {
 
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     #if DEBUG
-    printf("\n---\n");
+    printf("\n--- recv \n");
     print_hdr_ctcp(segment);
     #endif
 
@@ -269,10 +273,35 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
 
     convert_to_host_order(segment);
 
-    // if we receive a FIN
-
     // if we receive an ACK and we sent a FIN.
+    if ( (segment->flags & ACK) && state->finSent == 1 )
+    {
+        state->finSentAcked = 1;
 
+        state->seqno = segment->ackno;
+        state_list->timeSent = 0;
+        free(state->sent);
+        state->sent = NULL;
+        state->retransCount = 0;
+    }
+
+    if ((segment->flags & FIN) && state->finSent == 0)
+    {
+        ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
+        ctcp_send(state, finSeg);
+        state->ackno += 1;
+        state->finSent = 1;
+    }
+
+    if ( (segment->flags & FIN))
+    {
+        ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
+        ctcp_send(state, ackSeg);
+
+        if (state->finSentAcked) {
+            ctcp_destroy(state);
+        }
+    }
 
 
     // If the ACK flag is turned on, update our seq number.
@@ -309,7 +338,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
     }
 
     #if DEBUG
-    printf("---\n\n");
+    printf("--- recv end\n\n");
     #endif
 
     // free resources
