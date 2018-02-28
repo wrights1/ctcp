@@ -258,8 +258,8 @@ void ctcp_destroy(ctcp_state_t *state)
 */
 void ctcp_read(ctcp_state_t *state)
 {
-    if (state->finSent || state->finRecv) {
-        // if a FIN has been sent or received, we don't accept input
+    if (state->finSent) {
+        // if a FIN has been sent, we don't accept input anymore
         return;
     } else if (state->sent == NULL) {
         // allocate the input buffer
@@ -331,15 +331,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         }
     }
 
-    if ((segment->flags & FIN) && state->finSent == 0) {
-        ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
-        ctcp_send(state, finSeg);
-
+    if ((segment->flags & FIN)) {
         state->finRecv = 1;
         state->ackno += 1;
-        state->finSent = 1;
-    } else if ((segment->flags & FIN)) {
-        state->finRecv = 1;
+
         ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
         ctcp_send(state, ackSeg);
 
