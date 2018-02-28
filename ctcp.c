@@ -60,6 +60,16 @@ struct ctcp_state {
  */
 static ctcp_state_t *state_list;
 
+//==============================================================================
+// Helper functions
+//==============================================================================
+
+int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment);
+ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags);
+int verify_cksum(ctcp_segment_t *segment);
+void convert_to_host_order(ctcp_segment_t *segment);
+void convert_to_network_order(ctcp_segment_t *segment);
+
 // int compute_segLength(ctcp_segment_t *segment)
 // {
 //     int dataLen = 0;
@@ -126,16 +136,18 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
 
     // initialize fields in the cTCP header
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
-    segment->seqno = htonl(state->seqno);
-    segment->ackno = htonl(state->ackno);
-    segment->len = htons(segLength);
+    segment->seqno = state->seqno;
+    segment->ackno = state->ackno;
+    segment->len = segLength;
 
     segment->flags = 0;
     segment->flags |= flags;
-    segment->flags = htonl(segment->flags);
 
-    segment->window = htons(MAX_SEG_DATA_SIZE);
+    segment->window = MAX_SEG_DATA_SIZE;
     segment->cksum = 0;
+
+    // convert everything to network byte order
+    convert_to_network_order(segment);
 
     // compute the checksum
     segment->cksum = cksum(segment, segLength);
@@ -172,10 +184,23 @@ void convert_to_host_order(ctcp_segment_t *segment)
     segment->cksum = ntohs(segment->cksum);
 }
 
-//==============================================================================
-//==============================================================================
-//==============================================================================
+/*
+ * Convert fields in the given segment to network byte order
+ */
+void convert_to_network_order(ctcp_segment_t *segment)
+{
+    segment->seqno = htonl(segment->seqno);
+    segment->ackno = htonl(segment->ackno);
+    segment->len = htons(segment->len);
+    segment->flags = htonl(segment->flags);
+    segment->window = htons(segment->window);
+    segment->cksum = htons(segment->cksum);
+}
 
+
+//==============================================================================
+// Main functions
+//==============================================================================
 
 ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 {
