@@ -16,7 +16,7 @@
 #include "ctcp_sys.h"
 #include "ctcp_utils.h"
 
-#define DEBUG 1
+#define DEBUG 0
 
 /**
  * Connection state.
@@ -44,7 +44,6 @@ struct ctcp_state {
     ctcp_segment_t *sent;
 
     uint64_t timeSent;
-
     uint16_t retransCount;
 
     uint8_t finSent;
@@ -53,6 +52,8 @@ struct ctcp_state {
 
     uint64_t inputSize;
 
+    char *output_data;
+    size_t received_data_len;
 };
 
 /**
@@ -72,17 +73,6 @@ int verify_cksum(ctcp_segment_t *segment);
 void convert_to_host_order(ctcp_segment_t *segment);
 void convert_to_network_order(ctcp_segment_t *segment);
 
-// int compute_segLength(ctcp_segment_t *segment)
-// {
-//     int dataLen = 0;
-//
-//     if (sizeof(segment->data))
-//     {
-//         dataLen = strlen(segment->data);
-//     }
-//
-//     return sizeof(ctcp_segment_t) + strlen(dataLen * sizeof(char));
-// }
 
 /*
  * Send the given segment over the connection in the given state struct.
@@ -100,11 +90,11 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
         dataLen = strlen(segment->data);
     }
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
-    printf("sentBytes = %d, segLength = %d\n", sentBytes, segLength);
+    fprintf(stderr, "sentBytes = %d, segLength = %d\n", sentBytes, segLength);
 
-    printf("--- send\n");
+    fprintf(stderr, "--- send\n");
     print_hdr_ctcp(segment);
-    printf("--- send end\n\n");
+    fprintf(stderr, "--- send end\n\n");
     #endif
 
     return sentBytes;
@@ -165,7 +155,7 @@ int verify_cksum(ctcp_segment_t *segment)
     uint16_t computed_cksum = cksum(segment, ntohs(segment->len));
     segment->cksum = original_cksum;
 
-    //printf("computed_cksum = %x, original_cksum = %x\n", computed_cksum,
+    // fprintf(stderr, "computed_cksum = %x, original_cksum = %x\n", computed_cksum,
     //       original_cksum);
 
     return original_cksum == computed_cksum;
@@ -229,6 +219,8 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 
     state->cfg = cfg;
 
+    state->output_data = calloc(MAX_SEG_DATA_SIZE, sizeof(char));
+
     return state;
 }
 
@@ -244,8 +236,9 @@ void ctcp_destroy(ctcp_state_t *state)
 
     /* FIXME: Do any other cleanup here. */
 
-    //free(state->cfg);
-
+    free(state->cfg);
+    free(state->output_data);
+    //free(state->conn);
     free(state);
     end_client();
 }
@@ -277,18 +270,17 @@ void ctcp_read(ctcp_state_t *state)
 
         if (ret == -1) // EOF found
         {
+            // send EOF to output in ctcp_output
+            fprintf(stderr, "EOF\n");
+            conn_output(state->conn, NULL, 0);
+
             // send our FIN
             ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
             ctcp_send(state, finSeg);
             state->finSent = 1;
-            // send EOF to output in ctcp_output
         } else if (ret > 0) {
             ctcp_segment_t *segment = make_segment(state, buf, ACK);
             ctcp_send(state, segment);
-
-            if (!verify_cksum(segment)) {
-                printf("wtf??\n");
-            }
         }
 
         free(buf);
@@ -298,15 +290,15 @@ void ctcp_read(ctcp_state_t *state)
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 {
     #if DEBUG
-    printf("\n--- recv \n");
+    fprintf(stderr, "\n--- recv \n");
     print_hdr_ctcp(segment);
     #endif
 
     // use the segment's checksum to verify the packet.
     if (!verify_cksum(segment)) {
         #if DEBUG
-        printf("corrupted segment\n");
-        printf("---\n");
+        fprintf(stderr, "corrupted segment\n");
+        fprintf(stderr, "---\n");
         #endif
 
         free(segment);
@@ -331,9 +323,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             // if we already received a FIN before sending one and having it ACKd, teardown
             if (state->finRecv) {
                 #if DEBUG
-                printf("\n--- recv end\n\n");
+                fprintf(stderr, "\n--- recv end\n\n");
                 #endif
 
+                free(segment);
                 ctcp_destroy(state);
             }
         }
@@ -346,15 +339,21 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         state->finRecv = 1;
 
         ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
-        print_hdr_ctcp(ackSeg);
         conn_send(state->conn, ackSeg, sizeof(ctcp_segment_t));
+
+        #if DEBUG
+        print_hdr_ctcp(ackSeg);
+        #endif
+
+        free(ackSeg);
 
         // receive a FIN and have already sent a FIN and had it ACKd
         if (state->finSentAcked) {
             #if DEBUG
-            printf("\n--- recv end\n\n");
+            fprintf(stderr, "\n--- recv end\n\n");
             #endif
 
+            free(segment);
             ctcp_destroy(state);
         }
     }
@@ -364,7 +363,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     // If the ACK flag is turned on, update our seq number.
     if (segment->flags & ACK) {
         int dataLen = state->inputSize;
-        printf("datalen = %d, state->seqno = %d\n", dataLen, state->seqno);
+
+        #if DEBUG
+        fprintf(stderr, "datalen = %d, state->seqno = %d\n", dataLen, state->seqno);
+        #endif
 
         if (state->seqno + dataLen == segment->ackno) {
             state->seqno = segment->ackno;
@@ -374,38 +376,42 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             state->retransCount = 0;
 
             #if DEBUG
-            printf("received ackno = %u\n", segment->ackno);
+            fprintf(stderr, "received ackno = %u\n", segment->ackno);
             #endif
         }
     }
 
     size_t received_data_len = len - sizeof(ctcp_segment_t);
+    size_t available_space = conn_bufspace(state->conn);
 
-    printf("received_data_len = %lu\n", received_data_len);
-
-    if (received_data_len > 0) {
+    if (received_data_len > 0 && available_space >= received_data_len) {
         // using strlen(segment->data) isntead of received_data_len above caused weird output idk why
         // update our ack number
         if (segment->seqno >= state->ackno) {
+            memcpy(state->output_data, segment->data, received_data_len);
+            state->received_data_len = received_data_len;
             conn_output(state->conn, segment->data, received_data_len);
             state->ackno += received_data_len;
 
             #if DEBUG
-            printf("received len = %lu\n", received_data_len);
+            fprintf(stderr, "received len = %lu\n", received_data_len);
             #endif
         }
 
         // construct an ACK segment - only if we receive data.
         ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
-        print_hdr_ctcp(ack_segment);
         conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
+
+        #if DEBUG
+        print_hdr_ctcp(ack_segment);
+        #endif
 
         // free the ACK segment
         free(ack_segment);
     }
 
     #if DEBUG
-    printf("--- recv end\n\n");
+    fprintf(stderr, "--- recv end\n\n");
     #endif
 
     // free resources
@@ -414,7 +420,15 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
 void ctcp_output(ctcp_state_t *state)
 {
-    printf("we outputting?\n");
+    #if DEBUG
+    fprintf(stderr, "we outputting?\n");
+    #endif
+
+    int space = conn_bufspace(state->conn);
+    if (space >= state->received_data_len)
+    {
+        conn_output(state->conn, state->output_data, state->received_data_len);
+    }
 }
 
 void ctcp_timer()
@@ -432,7 +446,10 @@ void ctcp_timer()
         }
 
         if ((current_time() - state->timeSent) > state->cfg->rt_timeout) {
-            printf("timed out\n");
+            #if DEBUG
+            fprintf(stderr, "timed out\n");
+            #endif
+
             ctcp_segment_t *segment = state->sent;
             ctcp_send(state, segment);
 
