@@ -51,6 +51,8 @@ struct ctcp_state {
     uint8_t finSentAcked;
     uint8_t finRecv;
 
+    uint64_t inputSize;
+
 };
 
 /**
@@ -89,17 +91,15 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
 {
     state->sent = segment;
     state->timeSent = current_time();
-    printf("time = %li\n", state->timeSent);
 
+    int sentBytes = conn_send(state->conn, segment, ntohs(segment->len));
+
+    #if DEBUG
     int dataLen = 0;
     if (segment->data != NULL) {
         dataLen = strlen(segment->data);
     }
-
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
-    int sentBytes = conn_send(state->conn, segment, ntohs(segment->len));
-
-    #if DEBUG
     printf("sentBytes = %d, segLength = %d\n", sentBytes, segLength);
 
     printf("--- send\n");
@@ -117,10 +117,7 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
 {
     int dataLen = 0;
     if (buf != NULL) {
-        //dataLen = sizeof(buf);
-        dataLen = MAX_SEG_DATA_SIZE - sizeof(ctcp_segment_t);
-        // will make segments maximum length every time
-        // works for both ASCII and binary, but is potentially inefficient
+        dataLen = state->inputSize;
     }
 
     ctcp_segment_t *segment;
@@ -130,9 +127,10 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
         memcpy(segment->data, buf, dataLen);
 
         #if DEBUG
-        //printf("input length = %i\n",int(strlen(buf)));
-        printf("buf = %s\n", segment->data);
+        //printf("input length = %lu\n",strlen(buf));
+        //printf("buf = %s\n", buf);
         #endif
+
     }
 
     // initialize fields in the cTCP header
@@ -246,7 +244,7 @@ void ctcp_destroy(ctcp_state_t *state)
 
     /* FIXME: Do any other cleanup here. */
 
-    free(state->cfg);
+    //free(state->cfg);
 
     free(state);
     end_client();
@@ -273,8 +271,9 @@ void ctcp_read(ctcp_state_t *state)
         // read the input
         int ret = 0;
         ret = conn_input(state->conn, buf, len);
-        printf("ret = %d\n", ret);
-        printf("strlen(buf) = %lu\n", strlen(buf));
+        //printf("ret = %d\n", ret);
+        //printf("strlen(buf) = %lu\n", strlen(buf));
+        state->inputSize = ret;
 
         if (ret == -1) // EOF found
         {
@@ -282,7 +281,7 @@ void ctcp_read(ctcp_state_t *state)
             ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
             ctcp_send(state, finSeg);
             state->finSent = 1;
-            // send EOF to output here
+            // send EOF to output in ctcp_output
         } else if (ret > 0) {
             ctcp_segment_t *segment = make_segment(state, buf, ACK);
             ctcp_send(state, segment);
@@ -316,12 +315,12 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
     convert_to_host_order(segment);
 
-    // ----------------- shutdown process ---------------------
+    // ----------------- shutdown process --------------------------------------
     // if we receive an ACK and we sent a FIN.
     if ((segment->flags & ACK) && state->finSent == 1) {
         state->finSentAcked = 1;
 
-        if (segment->ackno > state->seqno) // ensure the ACK we just got is ACKing the FIN
+        if (segment->ackno == state->seqno + 1) // ensure the ACK we just got is ACKing the FIN
         {
             state->seqno = segment->ackno;
             state_list->timeSent = 0;
@@ -329,6 +328,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             state->sent = NULL;
             state->retransCount = 0;
 
+            // if we already received a FIN before sending one and having it ACKd, teardown
             if (state->finRecv) {
                 #if DEBUG
                 printf("\n--- recv end\n\n");
@@ -337,17 +337,19 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
                 ctcp_destroy(state);
             }
         }
-
     }
 
     if ((segment->flags & FIN)) {
+        if (state->finRecv == 0) {
+            state->ackno += 1;
+        }
         state->finRecv = 1;
-        state->ackno += 1;
 
         ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
-        ctcp_send(state, ackSeg);
+        print_hdr_ctcp(ackSeg);
+        conn_send(state->conn, ackSeg, sizeof(ctcp_segment_t));
 
-        // receive a FIN after already having sent a FIN and had it ACKd
+        // receive a FIN and have already sent a FIN and had it ACKd
         if (state->finSentAcked) {
             #if DEBUG
             printf("\n--- recv end\n\n");
@@ -356,32 +358,42 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             ctcp_destroy(state);
         }
     }
-    // --------------------------------------------------------
+    // -------------------- END shutdown process -------------------------------
 
 
     // If the ACK flag is turned on, update our seq number.
     if (segment->flags & ACK) {
-        state->seqno = segment->ackno;
-        state_list->timeSent = 0;
-        free(state->sent);
-        state->sent = NULL;
-        state->retransCount = 0;
+        int dataLen = state->inputSize;
+        printf("datalen = %d, state->seqno = %d\n", dataLen, state->seqno);
 
-        #if DEBUG
-        printf("received ackno = %u\n", segment->ackno);
-        #endif
+        if (state->seqno + dataLen == segment->ackno) {
+            state->seqno = segment->ackno;
+            state_list->timeSent = 0;
+            free(state->sent);
+            state->sent = NULL;
+            state->retransCount = 0;
+
+            #if DEBUG
+            printf("received ackno = %u\n", segment->ackno);
+            #endif
+        }
     }
 
     size_t received_data_len = len - sizeof(ctcp_segment_t);
+
+    printf("received_data_len = %lu\n", received_data_len);
+
     if (received_data_len > 0) {
-        conn_output(state->conn, segment->data, strlen(segment->data));
-
+        // using strlen(segment->data) isntead of received_data_len above caused weird output idk why
         // update our ack number
-        state->ackno += received_data_len;
+        if (segment->seqno >= state->ackno) {
+            conn_output(state->conn, segment->data, received_data_len);
+            state->ackno += received_data_len;
 
-        #if DEBUG
-        printf("received len = %lu\n", received_data_len);
-        #endif
+            #if DEBUG
+            printf("received len = %lu\n", received_data_len);
+            #endif
+        }
 
         // construct an ACK segment - only if we receive data.
         ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
