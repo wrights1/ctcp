@@ -36,6 +36,7 @@ struct ctcp_state {
                                    It may be useful to have multiple linked lists
                                    for unacknowledged segments, segments that
                                    haven't been sent, etc. */
+
     uint32_t seqno;
     uint32_t ackno;
 
@@ -76,6 +77,12 @@ void convert_to_network_order(ctcp_segment_t *segment);
 
 /*
  * Send the given segment over the connection in the given state struct.
+ * 
+ * Parameters:
+ *      state: The state struct whose connection to sent the segment over.
+ *      segment: The segment to be sent.
+ * 
+ * Return value: Number of bytes sent.
  */
 int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
 {
@@ -101,7 +108,15 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
 }
 
 /*
- * Make a segment based on the current connection with the given data and flags
+ * Make a segment based on the current connection with the given data and flags.
+ * 
+ * Parameters:
+ *      state: The state associated with the segment to be created.
+ *      buf: Data to be contained in the segment.
+ *      flags: The flags for the segment.
+ * 
+ * Return value: A pointer to the newly created segment, which must be freed
+ *               by the caller.
  */
 ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
 {
@@ -146,6 +161,11 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
 
 /*
  * Verify the given segment's checksum.
+ * 
+ * Parameter:
+ *      segment: The segment to be verified.
+ * 
+ * Return value: 1 if the checksum is valid, 0 otherwise.
  */
 int verify_cksum(ctcp_segment_t *segment)
 {
@@ -155,14 +175,16 @@ int verify_cksum(ctcp_segment_t *segment)
     uint16_t computed_cksum = cksum(segment, ntohs(segment->len));
     segment->cksum = original_cksum;
 
-    // fprintf(stderr, "computed_cksum = %x, original_cksum = %x\n", computed_cksum,
-    //       original_cksum);
-
     return original_cksum == computed_cksum;
 }
 
 /*
  * Convert fields in the given segment to host byte order.
+ * 
+ * Parameter:
+ *      segment: The given segment whose fields to be converted.
+ * 
+ * Return value: None.
  */
 void convert_to_host_order(ctcp_segment_t *segment)
 {
@@ -175,7 +197,12 @@ void convert_to_host_order(ctcp_segment_t *segment)
 }
 
 /*
- * Convert fields in the given segment to network byte order
+ * Convert fields in the given segment to network byte order.
+ * 
+ * Parameter:
+ *      segment: The given segment whose fields to be converted.
+ * 
+ * Return value: None.
  */
 void convert_to_network_order(ctcp_segment_t *segment)
 {
@@ -234,11 +261,9 @@ void ctcp_destroy(ctcp_state_t *state)
     *state->prev = state->next;
     conn_remove(state->conn);
 
-    /* FIXME: Do any other cleanup here. */
-
     free(state->cfg);
     free(state->output_data);
-    //free(state->conn);
+
     free(state);
     end_client();
 }
@@ -305,6 +330,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         return;
     }
 
+    // convert fields to host byte order
     convert_to_host_order(segment);
 
     // ----------------- shutdown process --------------------------------------
@@ -328,16 +354,23 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
                 free(segment);
                 ctcp_destroy(state);
+
+                // exit the function in case the program's running as the server
+                // in which case ctcp_destroy will not exit the program
+                return;
             }
         }
     }
 
+    // if we receive a FIN
     if ((segment->flags & FIN)) {
         if (state->finRecv == 0) {
+            // increase the ackno if we haven't yet received a FIN.
             state->ackno += 1;
         }
         state->finRecv = 1;
 
+        // ACK the received FIN.
         ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
         conn_send(state->conn, ackSeg, sizeof(ctcp_segment_t));
 
@@ -347,7 +380,8 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
         free(ackSeg);
 
-        // receive a FIN and have already sent a FIN and had it ACKd
+        // if we receive a FIN and have already sent a FIN and had it ACKd
+        // then exit the client.
         if (state->finSentAcked) {
             #if DEBUG
             fprintf(stderr, "\n--- recv end\n\n");
@@ -355,12 +389,16 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
             free(segment);
             ctcp_destroy(state);
+
+            // exit the function in case the program's running as the server
+            // in which case ctcp_destroy will not exit the program
+            return;
         }
     }
     // -------------------- END shutdown process -------------------------------
 
 
-    // If the ACK flag is turned on, update our seq number.
+    // If the ACK flag is turned on
     if (segment->flags & ACK) {
         int dataLen = state->inputSize;
 
@@ -368,6 +406,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         fprintf(stderr, "datalen = %d, state->seqno = %d\n", dataLen, state->seqno);
         #endif
 
+        // update our sequence number 
         if (state->seqno + dataLen == segment->ackno) {
             state->seqno = segment->ackno;
             state_list->timeSent = 0;
