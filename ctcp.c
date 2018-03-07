@@ -15,7 +15,7 @@
 #include "ctcp_linked_list.h"
 #include "ctcp_utils.h"
 
-#define DEBUG 0
+#define DEBUG 1
 
 
 /**
@@ -42,7 +42,7 @@ struct ctcp_state {
 
     ctcp_config_t *cfg;
 
-    ctcp_segment_t *sent;
+    linked_list_t *sent;
 
     long timeSent;
     uint8_t retransCount;
@@ -55,7 +55,17 @@ struct ctcp_state {
 
     char *output_data;
     size_t received_data_len;
+
+    uint16_t send_window_avail;
 };
+
+typedef struct segment_info {
+    ctcp_segment_t* segment;
+    int dataLen;
+    long timeSent;
+    uint8_t ackd;
+    int retransCount;
+} segment_info_t;
 
 /**
  * Linked list of connection states. Go through this in ctcp_timer() to
@@ -68,7 +78,7 @@ static ctcp_state_t *state_list;
 // Helper functions
 //==============================================================================
 
-int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment);
+int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment, int dataLen);
 ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags);
 int verify_cksum(ctcp_segment_t *segment);
 void convert_to_host_order(ctcp_segment_t *segment);
@@ -77,25 +87,29 @@ void convert_to_network_order(ctcp_segment_t *segment);
 
 /*
  * Send the given segment over the connection in the given state struct.
- * 
+ *
  * Parameters:
  *      state: The state struct whose connection to sent the segment over.
  *      segment: The segment to be sent.
- * 
+ *
  * Return value: Number of bytes sent.
  */
-int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
+int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment, int dataLen)
 {
-    state->sent = segment;
-    state->timeSent = current_time();
+    long timeSent = current_time();
+    segment_info_t *info = calloc(sizeof(segment_info_t), 1);
+
+    info->segment = segment;
+    info->timeSent = timeSent;
+    info->ackd = 0;
+    info->retransCount = 0;
+    info->dataLen = dataLen;
+
+    ll_add(state->sent, info);
 
     int sentBytes = conn_send(state->conn, segment, ntohs(segment->len));
 
     #if DEBUG
-    int dataLen = 0;
-    if (segment->data != NULL) {
-        dataLen = strlen(segment->data);
-    }
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
     fprintf(stderr, "sentBytes = %d, segLength = %d\n", sentBytes, segLength);
 
@@ -109,12 +123,12 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment)
 
 /*
  * Make a segment based on the current connection with the given data and flags.
- * 
+ *
  * Parameters:
  *      state: The state associated with the segment to be created.
  *      buf: Data to be contained in the segment.
  *      flags: The flags for the segment.
- * 
+ *
  * Return value: A pointer to the newly created segment, which must be freed
  *               by the caller.
  */
@@ -163,10 +177,10 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
 
 /*
  * Verify the given segment's checksum.
- * 
+ *
  * Parameter:
  *      segment: The segment to be verified.
- * 
+ *
  * Return value: 1 if the checksum is valid, 0 otherwise.
  */
 int verify_cksum(ctcp_segment_t *segment)
@@ -185,10 +199,10 @@ int verify_cksum(ctcp_segment_t *segment)
 
 /*
  * Convert fields in the given segment to host byte order.
- * 
+ *
  * Parameter:
  *      segment: The given segment whose fields to be converted.
- * 
+ *
  * Return value: None.
  */
 void convert_to_host_order(ctcp_segment_t *segment)
@@ -203,10 +217,10 @@ void convert_to_host_order(ctcp_segment_t *segment)
 
 /*
  * Convert fields in the given segment to network byte order.
- * 
+ *
  * Parameter:
  *      segment: The given segment whose fields to be converted.
- * 
+ *
  * Return value: None.
  */
 void convert_to_network_order(ctcp_segment_t *segment)
@@ -253,6 +267,8 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 
     state->output_data = calloc(MAX_SEG_DATA_SIZE, sizeof(char));
 
+    state->sent = ll_create();
+
     return state;
 }
 
@@ -289,12 +305,12 @@ void ctcp_read(ctcp_state_t *state)
     if (state->finSent) {
         // if a FIN has been sent, we don't accept input anymore
         return;
-    } else if (state->sent == NULL) {
+    } else {
         // otherwise, if no segment is waiting to be ACK'd, we read from STDIN.
         // allocate the input buffer
         char *buf;
-        buf = calloc(sizeof(char), MAX_SEG_DATA_SIZE);
-        size_t len = MAX_SEG_DATA_SIZE;
+        buf = calloc(sizeof(char), state->cfg->send_window - state->send_window_avail);
+        size_t len = state->cfg->send_window - state->send_window_avail;
 
         // read the input
         int ret = 0;
@@ -313,12 +329,32 @@ void ctcp_read(ctcp_state_t *state)
 
             // send our FIN
             ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
-            ctcp_send(state, finSeg);
+            ctcp_send(state, finSeg, 0);
             state->finSent = 1;
         } else if (ret > 0) {
             // otherwise we send the inputted data
-            ctcp_segment_t *segment = make_segment(state, buf, ACK);
-            ctcp_send(state, segment);
+            int start = 0;
+            int total_data_size = ret;
+
+            while (start < total_data_size)
+            {
+                int newbuf_size = MAX_SEG_DATA_SIZE;
+                if (ret < MAX_SEG_DATA_SIZE) {
+                    newbuf_size = ret;
+                }
+
+                state->inputSize = (newbuf_size);
+
+                char *newBuf = calloc(newbuf_size, 1);
+                memcpy(newBuf, buf + start, newbuf_size);
+                ctcp_segment_t *segment = make_segment(state, newBuf, ACK);
+                ctcp_send(state, segment, newbuf_size);
+
+                ret = ret - newbuf_size;
+                start += newbuf_size;
+
+                free(newBuf);
+            }
         }
 
         free(buf);
@@ -350,7 +386,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     // if we receive an ACK and we sent a FIN.
     if ((segment->flags & ACK) && state->finSent == 1) {
         // ensure the ACK we just got is ACKing the FIN
-        if (segment->ackno == state->seqno + 1) 
+        if (segment->ackno == state->seqno + 1)
         {
             // mark our FIN as having been ACK'd and update the sequence number
             state->finSentAcked = 1;
@@ -362,7 +398,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             state->sent = NULL;
             state->retransCount = 0;
 
-            // if we already received a FIN before sending one 
+            // if we already received a FIN before sending one
             // and having it ACKd, teardown
             if (state->finRecv) {
                 #if DEBUG
@@ -420,56 +456,67 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         int dataLen = state->inputSize;
 
         #if DEBUG
-        fprintf(stderr, "datalen = %d, state->seqno = %d\n", dataLen, 
+        fprintf(stderr, "datalen = %d, state->seqno = %d\n", dataLen,
             state->seqno);
         #endif
 
+        ll_node_t *current_node = state->sent->head;
+        segment_info_t *current_info = (segment_info_t *) current_node->object;
+
         // update our sequence number if the segment is ACK'ing our previously
         // sent segment.
-        if (state->seqno + dataLen == segment->ackno) {
+        if (current_info->dataLen + state->seqno == segment->ackno) {
             state->seqno = segment->ackno;
 
-            free(state->sent);
-            state_list->timeSent = 0;
-            state->sent = NULL;
-            state->retransCount = 0;
-
-            #if DEBUG
-            fprintf(stderr, "received ackno = %u\n", segment->ackno);
-            #endif
-        }
-    }
-
-    // get the data size and the available space for outputting
-    size_t received_data_len = segment->len - sizeof(ctcp_segment_t);
-    size_t available_space = conn_bufspace(state->conn);
-
-    // only ACK the segment and output if there is enough space, and if 
-    // there is enough data
-    if (received_data_len > 0 && available_space >= received_data_len) {
-        // update and output the data if the segment isn't duplicate.
-        if (segment->seqno >= state->ackno) {
-            memcpy(state->output_data, segment->data, received_data_len);
-            state->received_data_len = received_data_len;
-            ctcp_output(state);
-            state->ackno += received_data_len;
-
-            #if DEBUG
-            fprintf(stderr, "received len = %lu\n", received_data_len);
-            #endif
+            free(current_info->segment);
+            free(current_info);
+            ll_remove(state->sent, current_node);
         }
 
-        // construct and send an ACK segment - only if we receive data.
-        ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
-        conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
-
-        #if DEBUG
-        print_hdr_ctcp(ack_segment);
-        #endif
-
-        // free the ACK segment
-        free(ack_segment);
+        // if (state->seqno + dataLen == segment->ackno) {
+        //     state->seqno = segment->ackno;
+        //
+        //     free(state->sent);
+        //     state_list->timeSent = 0;
+        //     state->sent = NULL;
+        //     state->retransCount = 0;
+        //
+        //     #if DEBUG
+        //     fprintf(stderr, "received ackno = %u\n", segment->ackno);
+        //     #endif
+        // }
     }
+    //
+    // // get the data size and the available space for outputting
+    // size_t received_data_len = segment->len - sizeof(ctcp_segment_t);
+    // size_t available_space = conn_bufspace(state->conn);
+    //
+    // // only ACK the segment and output if there is enough space, and if
+    // // there is enough data
+    // if (received_data_len > 0 && available_space >= received_data_len) {
+    //     // update and output the data if the segment isn't duplicate.
+    //     if (segment->seqno >= state->ackno) {
+    //         memcpy(state->output_data, segment->data, received_data_len);
+    //         state->received_data_len = received_data_len;
+    //         ctcp_output(state);
+    //         state->ackno += received_data_len;
+    //
+    //         #if DEBUG
+    //         fprintf(stderr, "received len = %lu\n", received_data_len);
+    //         #endif
+    //     }
+    //
+    //     // construct and send an ACK segment - only if we receive data.
+    //     ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
+    //     conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
+    //
+    //     #if DEBUG
+    //     print_hdr_ctcp(ack_segment);
+    //     #endif
+    //
+    //     // free the ACK segment
+    //     free(ack_segment);
+    // }
 
     #if DEBUG
     fprintf(stderr, "--- recv end\n\n");
@@ -496,27 +543,28 @@ void ctcp_timer()
 
     // iterate through the list of states
     while (state != NULL) {
-        if (state->timeSent == 0) {
-            state = state->next;
-            continue;
-        } // haven't sent anything yet
-
-        // teardown the connection if the retransmission limit is reached.
-        if (state->retransCount >= 5) {
-            ctcp_destroy(state);
-        } else if ((current_time() - state->timeSent) > state->cfg->rt_timeout) {
-            // otherwise check if the last sent segment has timed out.
-            #if DEBUG
-            fprintf(stderr, "timed out\n");
-            #endif
-
-            // retransmit the segment and increase the retransmission counter.
-            ctcp_segment_t *segment = state->sent;
-            ctcp_send(state, segment);
-
-            state->retransCount += 1;
-        }
-
-        state = state->next;
+        break;
+        // if (state->timeSent == 0) {
+        //     state = state->next;
+        //     continue;
+        // } // haven't sent anything yet
+        //
+        // // teardown the connection if the retransmission limit is reached.
+        // if (state->retransCount >= 5) {
+        //     ctcp_destroy(state);
+        // } else if ((current_time() - state->timeSent) > state->cfg->rt_timeout) {
+        //     // otherwise check if the last sent segment has timed out.
+        //     #if DEBUG
+        //     fprintf(stderr, "timed out\n");
+        //     #endif
+        //
+        //     // retransmit the segment and increase the retransmission counter.
+        //     ctcp_segment_t *segment = state->sent;
+        //     ctcp_send(state, segment);
+        //
+        //     state->retransCount += 1;
+        // }
+        //
+        // state = state->next;
     }
 }
