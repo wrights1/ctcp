@@ -37,7 +37,8 @@ struct ctcp_state {
                                    for unacknowledged segments, segments that
                                    haven't been sent, etc. */
 
-    uint32_t seqno;
+    uint32_t acked_seqno;
+    uint32_t current_seqno;
     uint32_t ackno;
 
     ctcp_config_t *cfg;
@@ -108,6 +109,7 @@ int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment, int dataLen)
     ll_add(state->sent, info);
 
     int sentBytes = conn_send(state->conn, segment, ntohs(segment->len));
+    state->current_seqno += dataLen;
 
     #if DEBUG
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
@@ -156,7 +158,7 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
     }
 
     // initialize fields in the cTCP header
-    segment->seqno = state->seqno;
+    segment->seqno = state->current_seqno;
     segment->ackno = state->ackno;
     segment->len = segLength;
 
@@ -257,7 +259,8 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 
     /* Set fields. */
     state->conn = conn;
-    state->seqno = 1;
+    state->current_seqno = 1;
+    state->acked_seqno = 1;
     state->ackno = 1;
 
     state->sent = NULL;
@@ -386,11 +389,11 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     // if we receive an ACK and we sent a FIN.
     if ((segment->flags & ACK) && state->finSent == 1) {
         // ensure the ACK we just got is ACKing the FIN
-        if (segment->ackno == state->seqno + 1)
+        if (segment->ackno == state->acked_seqno + 1)
         {
             // mark our FIN as having been ACK'd and update the sequence number
             state->finSentAcked = 1;
-            state->seqno = segment->ackno;
+            state->acked_seqno = segment->ackno;
 
             // free the sent segment and reset the retransmission counter.
             state_list->timeSent = 0;
@@ -456,8 +459,8 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         int dataLen = state->inputSize;
 
         #if DEBUG
-        fprintf(stderr, "datalen = %d, state->seqno = %d\n", dataLen,
-            state->seqno);
+        fprintf(stderr, "datalen = %d, state->acked_seqno = %d\n", dataLen,
+            state->acked_seqno);
         #endif
 
         ll_node_t *current_node = state->sent->head;
@@ -465,8 +468,8 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
         // update our sequence number if the segment is ACK'ing our previously
         // sent segment.
-        if (current_info->dataLen + state->seqno == segment->ackno) {
-            state->seqno = segment->ackno;
+        if (current_info->dataLen + state->acked_seqno == segment->ackno) {
+            state->acked_seqno = segment->ackno;
 
             free(current_info->segment);
             free(current_info);
