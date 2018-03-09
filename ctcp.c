@@ -479,8 +479,6 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         ll_node_t *current_node = state->sent->head;
         segment_info_t *current_info = (segment_info_t *) current_node->object;
 
-
-
         // update our sequence number if the segment is ACK'ing our previously
         // sent segment.
         //if (current_info->dataLen + state->send_base == segment->ackno) {
@@ -508,24 +506,26 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
                 }
             }
         } else if (state->send_base == segment->ackno) {
-            current_node = current_node->next;
-            int total_data_size = current_info->dataLen;
-            current_info = (segment_info_t *) current_node->object;
-            total_data_size += current_info->dataLen;
+            // current_node = current_node->next;
+            // int total_data_size = current_info->dataLen;
+            // current_info = (segment_info_t *) current_node->object;
+            // total_data_size += current_info->dataLen;
+            //
+            // while (current_node != NULL)
+            // {
+            //     if (state->send_base + total_data_size == segment->ackno)
+            //     {
+            //         fprintf(stderr, "AAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAA\n");
+            //         current_info->ackd = 1;
+            //         break;
+            //     }
+            //     current_node = current_node->next;
+            //     if (current_node != NULL) {
+            //         current_info = (segment_info_t *) current_node->object;
+            //     }
+            // }
 
-            while (current_node != NULL)
-            {
-                if (state->send_base + total_data_size == segment->ackno)
-                {
-                    current_info->ackd = 1;
-                    break;
-                }
-                current_node = current_node->next;
-                if (current_node != NULL) {
-                    current_info = (segment_info_t *) current_node->object;
-                }
-            }
-
+            //ctcp_send(state, current_info);
         }
 
     }
