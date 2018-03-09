@@ -45,9 +45,6 @@ struct ctcp_state {
 
     linked_list_t *sent;
 
-    long timeSent;
-    uint8_t retransCount;
-
     uint8_t finSent;
     uint8_t finSentAcked;
     uint8_t finRecv;
@@ -79,8 +76,9 @@ static ctcp_state_t *state_list;
 // Helper functions
 //==============================================================================
 
-int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment, int dataLen);
+int ctcp_send(ctcp_state_t *state, segment_info_t *info);
 ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags);
+segment_info_t *make_segment_info(ctcp_segment_t *segment, int dataLen);
 int verify_cksum(ctcp_segment_t *segment);
 void convert_to_host_order(ctcp_segment_t *segment);
 void convert_to_network_order(ctcp_segment_t *segment);
@@ -95,28 +93,22 @@ void convert_to_network_order(ctcp_segment_t *segment);
  *
  * Return value: Number of bytes sent.
  */
-int ctcp_send(ctcp_state_t *state, ctcp_segment_t *segment, int dataLen)
+int ctcp_send(ctcp_state_t *state, segment_info_t *info)
 {
     long timeSent = current_time();
-    segment_info_t *info = calloc(sizeof(segment_info_t), 1);
+    int dataLen = info->dataLen;
 
-    info->segment = segment;
+    int sentBytes = conn_send(state->conn, info->segment,
+        ntohs(info->segment->len));
     info->timeSent = timeSent;
-    info->ackd = 0;
-    info->retransCount = 0;
-    info->dataLen = dataLen;
-
-    ll_add(state->sent, info);
-
-    int sentBytes = conn_send(state->conn, segment, ntohs(segment->len));
-    state->current_seqno += dataLen;
+    info->retransCount += 1;
 
     #if DEBUG
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
     fprintf(stderr, "sentBytes = %d, segLength = %d\n", sentBytes, segLength);
 
     fprintf(stderr, "--- send\n");
-    print_hdr_ctcp(segment);
+    print_hdr_ctcp(info->segment);
     fprintf(stderr, "--- send end\n\n");
     #endif
 
@@ -175,6 +167,19 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
     segment->cksum = cksum(segment, segLength);
 
     return segment;
+}
+
+segment_info_t *make_segment_info(ctcp_segment_t *segment, int dataLen)
+{
+    segment_info_t *info = calloc(sizeof(segment_info_t), 1);
+
+    info->segment = segment;
+    info->timeSent = 0;
+    info->ackd = 0;
+    info->retransCount = 0;
+    info->dataLen = dataLen;
+
+    return info;
 }
 
 /*
@@ -264,7 +269,6 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
     state->ackno = 1;
 
     state->sent = NULL;
-    state->timeSent = 0;
 
     state->cfg = cfg;
 
@@ -351,8 +355,13 @@ void ctcp_read(ctcp_state_t *state)
 
                 char *newBuf = calloc(newbuf_size, 1);
                 memcpy(newBuf, buf + start, newbuf_size);
+
                 ctcp_segment_t *segment = make_segment(state, newBuf, ACK);
-                ctcp_send(state, segment, newbuf_size);
+                segment_info_t *info = make_segment_info(segment, newbuf_size);
+                ctcp_send(state, info);
+
+                state->current_seqno += newbuf_size;
+                ll_add(state->sent, info);
 
                 ret = ret - newbuf_size;
                 start += newbuf_size;
@@ -391,36 +400,36 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
     // ----------------- shutdown process --------------------------------------
     // if we receive an ACK and we sent a FIN.
-    if ((segment->flags & ACK) && state->finSent == 1) {
-        // ensure the ACK we just got is ACKing the FIN
-        if (segment->ackno == state->send_base + 1)
-        {
-            // mark our FIN as having been ACK'd and update the sequence number
-            state->finSentAcked = 1;
-            state->send_base = segment->ackno;
-
-            // free the sent segment and reset the retransmission counter.
-            state_list->timeSent = 0;
-            free(state->sent);
-            state->sent = NULL;
-            state->retransCount = 0;
-
-            // if we already received a FIN before sending one
-            // and having it ACKd, teardown
-            if (state->finRecv) {
-                #if DEBUG
-                fprintf(stderr, "\n--- recv end\n\n");
-                #endif
-
-                free(segment);
-                ctcp_destroy(state);
-
-                // exit the function in case the program's running as the server
-                // in which case ctcp_destroy will not exit the program
-                return;
-            }
-        }
-    }
+    // if ((segment->flags & ACK) && state->finSent == 1) {
+    //     // ensure the ACK we just got is ACKing the FIN
+    //     if (segment->ackno == state->send_base + 1)
+    //     {
+    //         // mark our FIN as having been ACK'd and update the sequence number
+    //         state->finSentAcked = 1;
+    //         state->send_base = segment->ackno;
+    //
+    //         // free the sent segment and reset the retransmission counter.
+    //         state_list->timeSent = 0;
+    //         free(state->sent);
+    //         state->sent = NULL;
+    //         state->retransCount = 0;
+    //
+    //         // if we already received a FIN before sending one
+    //         // and having it ACKd, teardown
+    //         if (state->finRecv) {
+    //             #if DEBUG
+    //             fprintf(stderr, "\n--- recv end\n\n");
+    //             #endif
+    //
+    //             free(segment);
+    //             ctcp_destroy(state);
+    //
+    //             // exit the function in case the program's running as the server
+    //             // in which case ctcp_destroy will not exit the program
+    //             return;
+    //         }
+    //     }
+    // }
 
     // if we receive a FIN
     // if ((segment->flags & FIN)) {
@@ -579,43 +588,22 @@ void ctcp_timer()
     while (state != NULL) {
         ll_node_t *current_node = ll_front(state->sent);
 
-        // while (current_node != NULL) {
-        //     segment_info_t *current_info = (segment_info_t *) current_node->object;
-        //
-        //     if (current_info->retransCount >= 5) {
-        //         ctcp_destroy(state);
-        //     } else if ((current_time() - current_info->timeSent) > state->cfg->rt_timeout) {
-        //         #if DEBUG
-        //         fprintf(stderr, "timed out\n");
-        //         #endif
-        //
-        //         // retransmit the segment and increase the retransmission counter.
-        //         ctcp_segment_t *segment = current_info->sent;
-        //         ctcp_send(state, segment);
-        //
-        //         state->retransCount += 1;
-        //     }
-        // }
-        // if (state->timeSent == 0) {
-        //     state = state->next;
-        //     continue;
-        // } // haven't sent anything yet
-        //
-        // // teardown the connection if the retransmission limit is reached.
-        // if (state->retransCount >= 5) {
-        //     ctcp_destroy(state);
-        // } else if ((current_time() - state->timeSent) > state->cfg->rt_timeout) {
-        //     // otherwise check if the last sent segment has timed out.
-        //     #if DEBUG
-        //     fprintf(stderr, "timed out\n");
-        //     #endif
-        //
-        //     // retransmit the segment and increase the retransmission counter.
-        //     ctcp_segment_t *segment = state->sent;
-        //     ctcp_send(state, segment);
-        //
-        //     state->retransCount += 1;
-        // }
+        while (current_node != NULL) {
+            segment_info_t *current_info = (segment_info_t *) current_node->object;
+
+            if (current_info->retransCount > 5) {
+                ctcp_destroy(state);
+            } else if ((current_time() - current_info->timeSent) > state->cfg->rt_timeout) {
+                #if DEBUG
+                fprintf(stderr, "timed out\n");
+                #endif
+
+                // retransmit the segment and increase the retransmission counter.
+                ctcp_send(state, current_info);
+            }
+
+            current_node = current_node->next;
+        }
 
         state = state->next;
     }
