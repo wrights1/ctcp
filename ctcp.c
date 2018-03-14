@@ -57,6 +57,7 @@ struct ctcp_state {
 
     uint16_t send_window_avail;
     uint16_t recv_window_avail;
+    uint16_t advertised_window_size;
 };
 
 typedef struct segment_info {
@@ -65,6 +66,7 @@ typedef struct segment_info {
     long timeSent;
     uint8_t ackd;
     int retransCount;
+    int sentFlag;
 } segment_info_t;
 
 /**
@@ -159,7 +161,7 @@ ctcp_segment_t *make_segment(ctcp_state_t *state, char *buf, uint32_t flags)
     segment->flags = 0;
     segment->flags |= flags;
 
-    segment->window = MAX_SEG_DATA_SIZE;
+    segment->window = state->recv_window_avail;
     segment->cksum = 0;
 
     // convert everything to network byte order
@@ -180,6 +182,7 @@ segment_info_t *make_segment_info(ctcp_segment_t *segment, int dataLen)
     info->ackd = 0;
     info->retransCount = 0;
     info->dataLen = dataLen;
+    info->sentFlag = 0;
 
     return info;
 }
@@ -276,9 +279,11 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 
     state->sent = ll_create();
     state->send_window_avail = state->cfg->send_window;
+    state->advertised_window_size = state->cfg->recv_window;
 
     state->received = ll_create();
     state->recv_window_avail = state->cfg->recv_window;
+
 
     return state;
 }
@@ -347,7 +352,7 @@ void ctcp_read(ctcp_state_t *state)
             int start = 0;
             int total_data_size = ret;
 
-            while (start < total_data_size)
+            while (start < total_data_size && state->send_window_avail > 0)
             {
                 int newbuf_size = MAX_SEG_DATA_SIZE;
                 if (ret < MAX_SEG_DATA_SIZE) {
@@ -361,9 +366,7 @@ void ctcp_read(ctcp_state_t *state)
 
                 ctcp_segment_t *segment = make_segment(state, newBuf, ACK);
                 segment_info_t *info = make_segment_info(segment, newbuf_size);
-                ctcp_send(state, info);
 
-                state->current_seqno += newbuf_size;
                 ll_add(state->sent, info);
 
                 ret = ret - newbuf_size;
@@ -372,9 +375,42 @@ void ctcp_read(ctcp_state_t *state)
 
                 free(newBuf);
             }
+
+            ll_node_t *current_node = ll_front(state->sent);
+            // find first unsent segment in sent list, start sending from there
+            while (current_node != NULL) {
+                segment_info_t *info = (segment_info_t *) current_node->object;
+                if (info->sentFlag == 0)
+                    break;
+                current_node = current_node->next;
+            }
+
+            segment_info_t *current_info = NULL;
+            if (current_node != NULL) {
+                current_info = (segment_info_t *) current_node->object;
+            }
+
+            while (current_node != NULL && state->advertised_window_size > 0 && current_info->sentFlag == 0 ) {
+                //fprintf(stderr, "=============== state->current_seqno ======== %d\n", state->current_seqno);
+                current_info->segment->seqno = htonl(state->current_seqno);
+                state->current_seqno += current_info->dataLen;
+                current_info->segment->cksum = 0;
+                current_info->segment->cksum = cksum(current_info->segment, ntohs(current_info->segment->len));
+                ctcp_send(state, current_info);
+                //fprintf(stderr, "=============== current_info->dataLen ======== %d\n", current_info->dataLen);
+
+                current_info->sentFlag = 1;
+
+                current_node = current_node->next;
+                if (current_node != NULL) {
+                    current_info = (segment_info_t *) current_node->object;
+                }
+
+            }
         }
 
-        free(buf);
+    free(buf);
+
     } else {
         //fprintf(stderr, "state->send_window_avail = 0\n");
     }
@@ -473,6 +509,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     // If the ACK flag is turned on
     if (segment->flags & ACK && ll_length(state->sent) > 0) {
         int dataLen = state->inputSize;
+        state->advertised_window_size = segment->window;
 
         #if DEBUG
         fprintf(stderr, "datalen = %d, state->send_base = %d\n", dataLen,
@@ -591,10 +628,12 @@ void ctcp_timer()
     // iterate through the list of states
     while (state != NULL) {
         ll_node_t *current_node = ll_front(state->sent);
+        segment_info_t *current_info = NULL;
+        if (current_node != NULL) {
+            current_info = (segment_info_t *) current_node->object;
+        }
 
-        while (current_node != NULL) {
-            segment_info_t *current_info = (segment_info_t *) current_node->object;
-
+        while (current_node != NULL && current_info->sentFlag == 1) {
             if (current_info->retransCount > 5) {
                 ctcp_destroy(state);
             } else if ((current_time() - current_info->timeSent) > state->cfg->rt_timeout) {
@@ -607,6 +646,9 @@ void ctcp_timer()
             }
 
             current_node = current_node->next;
+            if (current_node != NULL) {
+                current_info = (segment_info_t *) current_node->object;
+            }
         }
 
         state = state->next;
