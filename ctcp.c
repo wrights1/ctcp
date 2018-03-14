@@ -554,9 +554,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
                 }
             }
         } else if (state->send_base == segment->ackno) {
+            #if DEBUG
             fprintf(stderr, "WE LOST A BOI FAM\n");
             // there is a gap, wait for timeout
-
+            #endif
         }
 
     }
@@ -565,9 +566,11 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     size_t received_data_len = segment->len - sizeof(ctcp_segment_t);
     size_t available_space = conn_bufspace(state->conn);
 
+    #if DEBUG
     fprintf(stderr, "received_data_len = %lu\n", received_data_len);
     fprintf(stderr, "available_space = %lu\n", available_space);
     fprintf(stderr, "state->recv_window_avail = %d\n", state->recv_window_avail);
+    #endif
 
     if (received_data_len == 0) {
         free(segment);
