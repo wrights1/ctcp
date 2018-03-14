@@ -40,6 +40,7 @@ struct ctcp_state {
     uint32_t send_base;
     uint32_t current_seqno;
     uint32_t ackno;
+    uint32_t next_byte_consume;
 
     ctcp_config_t *cfg;
 
@@ -272,6 +273,7 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
     state->current_seqno = 1;
     state->send_base = 1;
     state->ackno = 1;
+    state->next_byte_consume = 1;
 
     state->cfg = cfg;
 
@@ -561,35 +563,80 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     fprintf(stderr, "available_space = %lu\n", available_space);
     fprintf(stderr, "state->recv_window_avail = %d\n", state->recv_window_avail);
 
+    if (received_data_len == 0) {
+        free(segment);
+        return;
+    }
+
     // only ACK the segment and output if there is enough space, and if
     // there is enough data
-    if (received_data_len > 0 && available_space >= received_data_len && state->recv_window_avail >= received_data_len) {
+    if (/*available_space >= received_data_len && */state->recv_window_avail >= received_data_len) {
         // update and output the data if the segment isn't duplicate.
-        if (segment->seqno >= state->ackno) {
-            ll_add(state->received, segment);
+        if (segment->seqno == state->ackno) {
+            ll_add_front(state->received, segment);
 
-            //memcpy(state->output_data, segment->data, received_data_len);
-            //state->received_data_len = received_data_len;
-            ctcp_output(state);
-            state->ackno += received_data_len;
+            ll_node_t *current_node = ll_front(state->received);
+            ctcp_segment_t *current_segment = NULL;
+
+            if (current_node != NULL) {
+                current_segment = (ctcp_segment_t *) current_node->object;
+            }
+
+            while (current_node != NULL && current_segment->seqno == state->ackno) {
+                int dataLen = current_segment->len - sizeof(ctcp_segment_t);
+                state->ackno += dataLen;
+
+                current_node = current_node->next;
+                if (current_node != NULL) {
+                    current_segment = (ctcp_segment_t *) current_node->object;
+                }
+            }
+
             state->recv_window_avail -= received_data_len;
+            ctcp_output(state);
 
             #if DEBUG
             fprintf(stderr, "received len = %lu\n", received_data_len);
             #endif
+        } else if (segment->seqno > state->ackno) {
+            ll_node_t *current_node = ll_front(state->received);
+            ll_node_t *prev_node = NULL;
+
+            if (current_node == NULL) {
+                ll_add_front(state->received, segment);
+            } else {
+                ctcp_segment_t *current_segment = (ctcp_segment_t *) current_node->object;
+
+                while (current_node != NULL && current_segment->seqno < segment->seqno) {
+                    prev_node = current_node;
+                    current_node = current_node->next;
+
+                    if (current_node != NULL) {
+                        current_segment = (ctcp_segment_t *) current_node->object;
+                    }
+                }
+
+                if (prev_node == NULL) {
+                    ll_add_front(state->received, segment);
+                } else if (current_node == NULL) {
+                    ll_add(state->received, segment);
+                } else {
+                    ll_add_after(state->received, prev_node, segment);
+                }
+            }
         }
-
-        // construct and send an ACK segment - only if we receive data.
-        ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
-        conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
-
-        #if DEBUG
-        print_hdr_ctcp(ack_segment);
-        #endif
-
-        // free the ACK segment
-        free(ack_segment);
     }
+
+    // construct and send an ACK segment - only if we receive data.
+    ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
+    conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
+
+    #if DEBUG
+    print_hdr_ctcp(ack_segment);
+    #endif
+
+    // free the ACK segment
+    free(ack_segment);
 
     #if DEBUG
     fprintf(stderr, "--- recv end\n\n");
@@ -602,21 +649,35 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 void ctcp_output(ctcp_state_t *state)
 {
     ll_node_t *current_node = ll_front(state->received);
+    ctcp_segment_t *current_segment = NULL;
+    if (current_node != NULL) {
+        current_segment = (ctcp_segment_t *) current_node->object;
+    }
 
-    while (current_node != NULL) {
-        ctcp_segment_t *current_segment = (ctcp_segment_t *) current_node->object;
+    if (current_segment->seqno != state->next_byte_consume) {
+        return;
+    }
+
+    while (current_node != NULL && current_segment->seqno == state->next_byte_consume) {
+
         size_t space = conn_bufspace(state->conn);
-
         int dataLen = current_segment->len - sizeof(ctcp_segment_t);
 
         if (space >= dataLen) {
             conn_output(state->conn, current_segment->data, dataLen);
+            state->next_byte_consume += dataLen;
             state->recv_window_avail += dataLen;
 
             ll_node_t *next_node = current_node->next;
             free(current_segment);
             ll_remove(state->received, current_node);
+
             current_node = next_node;
+            if (current_node != NULL) {
+                current_segment = (ctcp_segment_t *) current_node->object;
+            }
+        } else {
+            break;
         }
     }
 }
