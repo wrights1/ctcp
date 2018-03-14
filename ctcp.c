@@ -65,7 +65,6 @@ typedef struct segment_info {
     ctcp_segment_t* segment;
     int dataLen;
     long timeSent;
-    uint8_t ackd;
     int retransCount;
     int sentFlag;
 } segment_info_t;
@@ -180,7 +179,6 @@ segment_info_t *make_segment_info(ctcp_segment_t *segment, int dataLen)
 
     info->segment = segment;
     info->timeSent = 0;
-    info->ackd = 0;
     info->retransCount = 0;
     info->dataLen = dataLen;
     info->sentFlag = 0;
@@ -510,13 +508,13 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
     // If the ACK flag is turned on
     if (segment->flags & ACK && ll_length(state->sent) > 0) {
-        int dataLen = state->inputSize;
+        //int dataLen = state->inputSize;
         state->advertised_window_size = segment->window;
 
-        #if DEBUG
-        fprintf(stderr, "datalen = %d, state->send_base = %d\n", dataLen,
-            state->send_base);
-        #endif
+        // #if DEBUG
+        // fprintf(stderr, "datalen = %d, state->send_base = %d\n", dataLen,
+        //     state->send_base);
+        // #endif
 
         ll_node_t *current_node = state->sent->head;
         segment_info_t *current_info = (segment_info_t *) current_node->object;
@@ -526,16 +524,24 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
         //if (current_info->dataLen + state->send_base == segment->ackno) {
         if (state->send_base < segment->ackno) {
             state->send_base = segment->ackno;
-            current_info->ackd = 1;
 
             ll_node_t *next_node = NULL;
 
-            while (current_node != NULL && current_info->ackd == 1) {
+            #if DEBUG
+            if (current_node == NULL) fprintf(stderr, "current_node == NULL\n");
+            fprintf(stderr, "seqno = %u\n", ntohl(current_info->segment->seqno));
+            fprintf(stderr, "send_base = %d\n", state->send_base);
+            #endif
+
+            while (current_node != NULL && ntohl(current_info->segment->seqno) < state->send_base) {
                 next_node = current_node->next;
                 state->send_window_avail += current_info->dataLen;
 
                 #if DEBUG
+                fprintf(stderr, "-\n");
                 fprintf(stderr, "state->send_window_avail = %d\n", state->send_window_avail);
+                fprintf(stderr, "current seqno = %u\n", ntohl(current_info->segment->seqno));
+                fprintf(stderr, "-\n");
                 #endif
 
                 free(current_info->segment);
@@ -548,7 +554,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
                 }
             }
         } else if (state->send_base == segment->ackno) {
-
+            fprintf(stderr, "WE LOST A BOI FAM\n");
             // there is a gap, wait for timeout
 
         }
@@ -572,6 +578,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     // there is enough data
     if (/*available_space >= received_data_len && */state->recv_window_avail >= received_data_len) {
         // update and output the data if the segment isn't duplicate.
+
         if (segment->seqno == state->ackno) {
             ll_add_front(state->received, segment);
 
@@ -606,8 +613,14 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
                 ll_add_front(state->received, segment);
             } else {
                 ctcp_segment_t *current_segment = (ctcp_segment_t *) current_node->object;
+                int duplicate_segment = 0;
 
-                while (current_node != NULL && current_segment->seqno < segment->seqno) {
+                while (current_node != NULL && current_segment->seqno <= segment->seqno) {
+                    if (current_segment->seqno == segment->seqno) {
+                        duplicate_segment = 1;
+                        break;
+                    }
+
                     prev_node = current_node;
                     current_node = current_node->next;
 
@@ -616,18 +629,20 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
                     }
                 }
 
-                if (prev_node == NULL) {
-                    ll_add_front(state->received, segment);
-                } else if (current_node == NULL) {
-                    ll_add(state->received, segment);
-                } else {
-                    ll_add_after(state->received, prev_node, segment);
+                if (!duplicate_segment) {
+                    if (prev_node == NULL) {
+                        ll_add_front(state->received, segment);
+                    } else if (current_node == NULL) {
+                        ll_add(state->received, segment);
+                    } else {
+                        ll_add_after(state->received, prev_node, segment);
+                    }
                 }
             }
         }
     }
 
-    // construct and send an ACK segment - only if we receive data.
+    // construct and send an ACK segment
     ctcp_segment_t *ack_segment = make_segment(state, NULL, ACK);
     conn_send(state->conn, ack_segment, sizeof(ctcp_segment_t));
 
