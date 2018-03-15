@@ -79,9 +79,11 @@ given state.
 
 4. `ctcp_receive`
     We first verify the checksum and go about the teardown process as we did in
-    the previous project. The only differences here are that **!!!!!!INSERT TEARDOWN DETAILS HERE!!!!**
-    The two main cases are whether we are receiving an ACK or a segment with data in it.
-    - If receiving an ACK, and there are segments in `sent` (unacked data), there are two cases.
+    the previous project. The only differences here are that we manage the memory
+    differently. The two main cases are whether we are receiving an ACK or a
+    segment with data in it.
+    - If receiving an ACK, and there are segments in `sent` (unacked data), there
+    are two cases.
         - If the ACK is acking contiguous data (ackno > send_base), we update
         `send_base` to the new `ackno`, traverse `sent` and remove all segments
         up to the new `send_base`, effectively moving the send window forward as
@@ -111,7 +113,7 @@ given state.
     removing it from the linked list, until `received` is empty or we hit a gap.
     We increment `next_byte_consume`and `recv_window_avail` each time, moving
      the receive window forward. We check if there is enough space each time with
-     `conn_bufspace` and we break the loop if there is not. 
+     `conn_bufspace` and we break the loop if there is not.
 
 6. `ctcp_timer`
 
@@ -122,6 +124,64 @@ given state.
 
 ## 2. Implementation Challenges
 
+- Understanding protocol
+
+    Our first challenge was simply understanding exactly how exactly selective repeat
+    with cumulative ACKs works and what it means for our implementation. We used
+    the selective repeat animation to clarify exactly what we needed to achieve
+    and how certain cases were supposed to be handled. Then we moved on to actually
+    implementing it.
+
+- Managing and moving windows on both sides
+
+    We spent a considerable amount of time fleshing out how we stored and
+    maintained the send window. We struggled with implementing a good way to
+    correctly take in the ACKs when there were gaps and moving the window forward
+    when there was contiguous data. implementing the send functionality took us
+    the longest because we were figuring out how the protocol behaved in all cases
+    while developing. Once we started keeping track of the boundary between
+    contiguous and non-contiguous data with `send_base`, it made much more sense.
+    Doing the same for the receive window had its own challenges but it came
+    easier than send because we had done that first. The struggle with the receive
+    window was determining the best way to keep data in order and fill gaps when
+    they occur. We had a moderately big problem updating the ackno to the new contiguous data  
+    boundary after filling a gap, but solved it by traversing the linked list.
+
+
+- Filling gaps when receiving data
+
+    As noted, we had trouble devising a good way to take in potentially out of order
+    data and put it in the right places. At first there were so many cases that
+    it seemed incredibly hard and confusing. The more we thought about it and
+    worked it out, we realized there are really only 2 cases with a few sub-cases
+    each. Either the data is the at the expected position (contiguous) in which
+    case the data is outputted and the window just moves forward, or the data is
+    non-contiguous and we must find where it goes by looking at the seqno's of
+    the segments currently in the window. It actually didn't take very long to
+    code the receiver but it took a lot of thinking and designing.
+
+- Unreliability
+
+    With sliding window, there is far more opportunity for error when sending
+    over an unreliable network. In the last project we only had to worry about
+    one segment making there and getting an ACK back, which is a world of difference
+    compared to sliding window. Sifting through log files to find the one segment
+    that didn't make it or wasn't ACKed correctly or fell outside the window and
+    identify the causes of that error was painful and there were so many cases
+    to account for. We had several errors we discovered because of unreliability.
+    There were instances on both the sender and receiver sides where we had errors
+    related to incorrectly updating values in special cases like getting out of
+    order segments/ACKs that only manifested themselves under unreliable network
+    testing.
+
 ## 3. Testing
 
+The only thing in our testing procedure that differs from Project 2 was playing with
+window size. We used mismatch in window sizes between client and server to test
+our handling of full windows on both sides. For example, setting the client
+window to three times the size of the server window will constantly test our case
+ in which the sender needs to be flow controlled.
+
 ## 4. Remaining Bugs
+
+There have to be bugs but we haven't discovered them yet.
