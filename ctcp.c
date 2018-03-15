@@ -339,14 +339,16 @@ void ctcp_read(ctcp_state_t *state)
 
         if (ret == -1) // EOF found
         {
-            // send EOF to output in ctcp_output
-            // fprintf(stderr, "EOF\n");
-            // conn_output(state->conn, NULL, 0);
-            //
-            // // send our FIN
-            // ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
-            // ctcp_send(state, finSeg, 0);
+            //send EOF to output in ctcp_output
+            fprintf(stderr, "EOF\n");
+            conn_output(state->conn, NULL, 0);
+
+            // send our FIN
+            ctcp_segment_t *finSeg = make_segment(state, NULL, FIN | ACK);
+            segment_info_t *info = make_segment_info(finSeg, 0);
+            ctcp_send(state, info);
             state->finSent = 1;
+
         } else if (ret > 0) {
             // otherwise we send the inputted data
             int start = 0;
@@ -438,71 +440,71 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     convert_to_host_order(segment);
 
     // ----------------- shutdown process --------------------------------------
-    // if we receive an ACK and we sent a FIN.
-    // if ((segment->flags & ACK) && state->finSent == 1) {
-    //     // ensure the ACK we just got is ACKing the FIN
-    //     if (segment->ackno == state->send_base + 1)
-    //     {
-    //         // mark our FIN as having been ACK'd and update the sequence number
-    //         state->finSentAcked = 1;
-    //         state->send_base = segment->ackno;
-    //
-    //         // free the sent segment and reset the retransmission counter.
-    //         state_list->timeSent = 0;
-    //         free(state->sent);
-    //         state->sent = NULL;
-    //         state->retransCount = 0;
-    //
-    //         // if we already received a FIN before sending one
-    //         // and having it ACKd, teardown
-    //         if (state->finRecv) {
-    //             #if DEBUG
-    //             fprintf(stderr, "\n--- recv end\n\n");
-    //             #endif
-    //
-    //             free(segment);
-    //             ctcp_destroy(state);
-    //
-    //             // exit the function in case the program's running as the server
-    //             // in which case ctcp_destroy will not exit the program
-    //             return;
-    //         }
-    //     }
-    // }
+    //if we receive an ACK and we sent a FIN.
+    if ((segment->flags & ACK) && state->finSent == 1) {
+        // ensure the ACK we just got is ACKing the FIN
+        if (segment->ackno == state->send_base + 1)
+        {
+            // mark our FIN as having been ACK'd and update the sequence number
+            state->finSentAcked = 1;
+            state->send_base = segment->ackno;
 
-    // if we receive a FIN
-    // if ((segment->flags & FIN)) {
-    //     if (state->finRecv == 0) {
-    //         // increase the ackno if we haven't yet received a FIN.
-    //         state->ackno += 1;
-    //     }
-    //     state->finRecv = 1;
-    //
-    //     // ACK the received FIN.
-    //     ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
-    //     conn_send(state->conn, ackSeg, sizeof(ctcp_segment_t));
-    //
-    //     #if DEBUG
-    //     print_hdr_ctcp(ackSeg);
-    //     #endif
-    //
-    //     free(ackSeg);
-    //
-    //     // if we receive a FIN and have already sent a FIN and had it ACKd
-    //     // then exit the client.
-    //     if (state->finSentAcked) {
-    //         #if DEBUG
-    //         fprintf(stderr, "\n--- recv end\n\n");
-    //         #endif
-    //
-    //         free(segment);
-    //         ctcp_destroy(state);
-    //
-    //         // exit the function in case the program's running as the server,
-    //         // in which case ctcp_destroy will not exit the program
-    //         return;
-    //     }
-    // }
+            // free the sent segment and reset the retransmission counter.
+            // state_list->timeSent = 0;
+            // free(state->sent);
+            // state->sent = NULL;
+            // state->retransCount = 0;
+
+            // if we already received a FIN before sending one
+            // and having it ACKd, teardown
+            if (state->finRecv) {
+                #if DEBUG
+                fprintf(stderr, "\n--- recv end\n\n");
+                #endif
+
+                free(segment);
+                ctcp_destroy(state);
+
+                // exit the function in case the program's running as the server
+                // in which case ctcp_destroy will not exit the program
+                return;
+            }
+        }
+    }
+
+    //if we receive a FIN
+    if ((segment->flags & FIN)) {
+        if (state->finRecv == 0) {
+            // increase the ackno if we haven't yet received a FIN.
+            state->ackno += 1;
+        }
+        state->finRecv = 1;
+
+        // ACK the received FIN.
+        ctcp_segment_t *ackSeg = make_segment(state, NULL, ACK);
+        conn_send(state->conn, ackSeg, sizeof(ctcp_segment_t));
+
+        #if DEBUG
+        print_hdr_ctcp(ackSeg);
+        #endif
+
+        free(ackSeg);
+
+        // if we receive a FIN and have already sent a FIN and had it ACKd
+        // then exit the client.
+        if (state->finSentAcked) {
+            #if DEBUG
+            fprintf(stderr, "\n--- recv end\n\n");
+            #endif
+
+            free(segment);
+            ctcp_destroy(state);
+
+            // exit the function in case the program's running as the server,
+            // in which case ctcp_destroy will not exit the program
+            return;
+        }
+    }
     // -------------------- END shutdown process -------------------------------
 
 
@@ -582,7 +584,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     if (/*available_space >= received_data_len && */state->recv_window_avail >= received_data_len) {
         // update and output the data if the segment isn't duplicate.
 
-        if (segment->seqno == state->ackno) {
+        if (segment->seqno == state->ackno) { // received next expected contiguous bytes
             ll_add_front(state->received, segment);
 
             ll_node_t *current_node = ll_front(state->received);
@@ -609,6 +611,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             fprintf(stderr, "received len = %lu\n", received_data_len);
             #endif
         } else if (segment->seqno > state->ackno) {
+            // received non-contiguous data, is either filling or creating a gap
             ll_node_t *current_node = ll_front(state->received);
             ll_node_t *prev_node = NULL;
 
