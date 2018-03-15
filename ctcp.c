@@ -15,7 +15,7 @@
 #include "ctcp_linked_list.h"
 #include "ctcp_utils.h"
 
-#define DEBUG 1
+#define DEBUG 0
 
 
 /**
@@ -100,7 +100,7 @@ void convert_to_network_order(ctcp_segment_t *segment);
 int ctcp_send(ctcp_state_t *state, segment_info_t *info)
 {
     long timeSent = current_time();
-    int dataLen = info->dataLen;
+
 
     int sentBytes = conn_send(state->conn, info->segment,
         ntohs(info->segment->len));
@@ -108,6 +108,7 @@ int ctcp_send(ctcp_state_t *state, segment_info_t *info)
     info->retransCount += 1;
 
     #if DEBUG
+    int dataLen = info->dataLen;
     int segLength = sizeof(ctcp_segment_t) + (dataLen * sizeof(char));
     fprintf(stderr, "sentBytes = %d, segLength = %d\n", sentBytes, segLength);
 
@@ -305,6 +306,28 @@ void ctcp_destroy(ctcp_state_t *state)
         free(state->sent);
     }
 
+    if (state->received!= NULL) {
+        free(state->received);
+    }
+
+    // ll_node_t *current_node = state->sent->head;
+    // segment_info_t *current_info = (segment_info_t *) current_node->object;
+    // ll_node_t *next_node = NULL;
+    // while ( current_node != NULL){
+    //
+    //     next_node = current_node->next;
+    //     free(current_info->segment);
+    //     free(current_info);
+    //     ll_remove(state->sent, current_node);
+    //
+    //     current_node = next_node;
+    //     if (current_node != NULL) {
+    //         current_info = (segment_info_t *) current_node->object;
+    //     }
+    //
+    // }
+    // ll_destroy(state->sent);
+
     free(state);
     end_client();
 }
@@ -348,6 +371,9 @@ void ctcp_read(ctcp_state_t *state)
             segment_info_t *info = make_segment_info(finSeg, 0);
             ctcp_send(state, info);
             state->finSent = 1;
+
+            free(finSeg);
+            free(info);
 
         } else if (ret > 0) {
             // otherwise we send the inputted data
@@ -566,9 +592,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 
     // get the data size and the available space for outputting
     size_t received_data_len = segment->len - sizeof(ctcp_segment_t);
-    size_t available_space = conn_bufspace(state->conn);
+
 
     #if DEBUG
+    size_t available_space = conn_bufspace(state->conn);
     fprintf(stderr, "received_data_len = %lu\n", received_data_len);
     fprintf(stderr, "available_space = %lu\n", available_space);
     fprintf(stderr, "state->recv_window_avail = %d\n", state->recv_window_avail);
